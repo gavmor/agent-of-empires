@@ -179,10 +179,17 @@ impl Instance {
         self.yolo_mode
     }
 
-    fn has_custom_command(&self) -> bool {
+    pub fn has_custom_command(&self) -> bool {
         if !self.extra_args.is_empty() {
             return true;
         }
+        self.has_command_override()
+    }
+
+    /// True only when the launch command differs from the agent's default
+    /// binary (ignores extra_args). Use this for status-detection and
+    /// restart guards where only a wrapper script matters.
+    pub fn has_command_override(&self) -> bool {
         if self.command.is_empty() {
             return false;
         }
@@ -481,28 +488,26 @@ impl Instance {
             };
 
             if self.command.is_empty() {
-                crate::agents::get_agent(&self.tool)
-                    .filter(|a| a.supports_host_launch)
-                    .map(|a| {
-                        let mut cmd = a.binary.to_string();
-                        if !self.extra_args.is_empty() {
-                            cmd = format!("{} {}", cmd, self.extra_args);
-                        }
-                        if self.is_yolo_mode() {
-                            if let Some(ref yolo) = a.yolo {
-                                match yolo {
-                                    crate::agents::YoloMode::CliFlag(flag) => {
-                                        cmd = format!("{} {}", cmd, flag);
-                                    }
-                                    crate::agents::YoloMode::EnvVar(key, value) => {
-                                        cmd = format_env_var_prefix(key, value, &cmd);
-                                    }
-                                    crate::agents::YoloMode::AlwaysYolo => {}
+                crate::agents::get_agent(&self.tool).map(|a| {
+                    let mut cmd = a.binary.to_string();
+                    if !self.extra_args.is_empty() {
+                        cmd = format!("{} {}", cmd, self.extra_args);
+                    }
+                    if self.is_yolo_mode() {
+                        if let Some(ref yolo) = a.yolo {
+                            match yolo {
+                                crate::agents::YoloMode::CliFlag(flag) => {
+                                    cmd = format!("{} {}", cmd, flag);
                                 }
+                                crate::agents::YoloMode::EnvVar(key, value) => {
+                                    cmd = format_env_var_prefix(key, value, &cmd);
+                                }
+                                crate::agents::YoloMode::AlwaysYolo => {}
                             }
                         }
-                        wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
-                    })
+                    }
+                    wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
+                })
             } else {
                 let mut cmd = self.command.clone();
                 if !self.extra_args.is_empty() {
@@ -699,9 +704,10 @@ impl Instance {
             Err(_) => Status::Idle,
         };
         tracing::trace!(
-            "status detection '{}' (tool={}, custom_cmd={}): {:?}",
+            "status detection '{}' (tool={}, cmd_override={}, custom_cmd={}): {:?}",
             self.title,
             self.tool,
+            self.has_command_override(),
             self.has_custom_command(),
             detected
         );
@@ -715,8 +721,12 @@ impl Instance {
                 .unwrap_or_else(|| session.is_pane_running_shell())
         };
         self.status = match detected {
-            Status::Idle if self.has_custom_command() => {
-                if is_dead || is_shell_stale() {
+            Status::Idle if self.has_command_override() => {
+                // Custom commands run agents through wrapper scripts that appear
+                // as shell processes to tmux. Only declare Error when the pane is
+                // actually dead -- don't use is_shell_stale() since the shell IS
+                // the expected wrapper process.
+                if is_dead {
                     Status::Error
                 } else {
                     Status::Unknown
@@ -1145,6 +1155,15 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "unknown_agent".to_string();
         inst.command = "some-binary".to_string();
+        assert!(inst.has_custom_command());
+    }
+
+    #[test]
+    fn test_has_command_override_extra_args_only() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.extra_args = "--model opus".to_string();
+        assert!(!inst.has_command_override());
         assert!(inst.has_custom_command());
     }
 
