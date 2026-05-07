@@ -563,9 +563,18 @@ pub fn detect_hermes_status(_content: &str) -> Status {
     Status::Idle
 }
 
-/// settl status is detected via hooks (TOML-based), not tmux pane parsing.
+/// settl status is detected via hooks (JSON-based), not tmux pane parsing.
 /// This stub exists so the agent registry has a valid function pointer.
 pub fn detect_settl_status(_content: &str) -> Status {
+    Status::Idle
+}
+
+/// crush status is detected via hooks (JSON-based) or by parsing the spinner.
+pub fn detect_crush_status(raw_content: &str) -> Status {
+    let recent: Vec<&str> = raw_content.lines().rev().take(10).collect();
+    if has_any_spinner(&recent) {
+        return Status::Running;
+    }
     Status::Idle
 }
 
@@ -620,6 +629,25 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_detect_crush_status_running_on_spinner() {
+        for spinner in SPINNER_CHARS {
+            assert_eq!(
+                detect_crush_status(spinner),
+                Status::Running,
+                "spinner char '{spinner}' should be detected as Running"
+            );
+        }
+    }
+
+    #[test]
+    fn test_detect_crush_status_idle_on_plain_text() {
+        assert_eq!(detect_crush_status(""), Status::Idle);
+        assert_eq!(detect_crush_status("Some output"), Status::Idle);
+        assert_eq!(detect_crush_status("file saved successfully"), Status::Idle);
+        assert_eq!(detect_crush_status("ready\n> "), Status::Idle);
+    }
 
     #[test]
     fn test_detect_cursor_status_is_stub() {
