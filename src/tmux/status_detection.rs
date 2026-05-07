@@ -12,6 +12,10 @@ fn has_any_spinner(lines: &[&str]) -> bool {
         .any(|line| SPINNER_CHARS.iter().any(|s| line.contains(s)))
 }
 
+fn has_spinner(line: &str) -> bool {
+    SPINNER_CHARS.iter().any(|s| line.contains(s))
+}
+
 fn contains_approval_prompt(text_lower: &str, extra: &[&str]) -> bool {
     const BASE: &[&str] = &["(y/n)", "[y/n]", "approve", "allow"];
     BASE.iter()
@@ -569,13 +573,24 @@ pub fn detect_settl_status(_content: &str) -> Status {
     Status::Idle
 }
 
-/// crush status is detected via hooks (JSON-based) or by parsing the spinner.
 pub fn detect_crush_status(raw_content: &str) -> Status {
-    let recent: Vec<&str> = raw_content.lines().rev().take(10).collect();
-    if has_any_spinner(&recent) {
-        return Status::Running;
+    // TODO: Implement JSON hook-based detection first.
+    // if let Some(status) = check_json_hooks() { return status; }
+
+    // tmux capture-pane pads with blank lines; filter them out before windowing
+    // so we don't miss a spinner buried behind trailing empty lines.
+    let is_spinning = raw_content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(10)
+        .any(has_spinner);
+
+    if is_spinning {
+        Status::Running
+    } else {
+        Status::Idle
     }
-    Status::Idle
 }
 
 pub fn detect_gemini_status(raw_content: &str) -> Status {
@@ -1071,6 +1086,22 @@ mod tests {
     fn test_detect_hermes_status_is_stub() {
         // Hermes uses hook-based detection; the stub always returns Idle
         assert_eq!(detect_hermes_status("anything"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_crush_status_finds_signal_above_blank_padding() {
+        // tmux capture-pane -S -50 fills 50 lines even when only a few
+        // lines have content; the detector must not miss a spinner hidden
+        // behind trailing blank lines.
+        let mut content = String::from("⠋\n");
+        for _ in 0..40 {
+            content.push('\n');
+        }
+        assert_eq!(
+            detect_crush_status(&content),
+            Status::Running,
+            "spinner should be detected even with trailing blank lines"
+        );
     }
 
     #[test]
