@@ -12,6 +12,10 @@ fn has_any_spinner(lines: &[&str]) -> bool {
         .any(|line| SPINNER_CHARS.iter().any(|s| line.contains(s)))
 }
 
+fn has_spinner(line: &str) -> bool {
+    SPINNER_CHARS.iter().any(|s| line.contains(s))
+}
+
 fn contains_approval_prompt(text_lower: &str, extra: &[&str]) -> bool {
     const BASE: &[&str] = &["(y/n)", "[y/n]", "approve", "allow"];
     BASE.iter()
@@ -569,13 +573,17 @@ pub fn detect_settl_status(_content: &str) -> Status {
     Status::Idle
 }
 
-/// crush status is detected via hooks (JSON-based) or by parsing the spinner.
 pub fn detect_crush_status(raw_content: &str) -> Status {
-    let recent: Vec<&str> = raw_content.lines().rev().take(10).collect();
-    if has_any_spinner(&recent) {
-        return Status::Running;
+    // TODO: Implement JSON hook-based detection first.
+    // if let Some(status) = check_json_hooks() { return status; }
+
+    let is_spinning = raw_content.lines().rev().take(10).any(has_spinner);
+
+    if is_spinning {
+        Status::Running
+    } else {
+        Status::Idle
     }
-    Status::Idle
 }
 
 pub fn detect_gemini_status(raw_content: &str) -> Status {
