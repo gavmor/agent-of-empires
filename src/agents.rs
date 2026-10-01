@@ -132,14 +132,6 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
     },
 ];
 
-/// Hook events for crush. crush supports only PreToolUse (as of crush v0.2.0);
-/// idle status is instead detected via spinner parsing in detect_crush_status.
-const CRUSH_HOOK_EVENTS: &[HookEvent] = &[HookEvent {
-    name: "PreToolUse",
-    matcher: None,
-    status: Some("running"),
-}];
-
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
@@ -371,15 +363,12 @@ pub const AGENTS: &[AgentDef] = &[
         binary: "crush",
         aliases: &["charmbracelet/crush", "charmbracelet-crush"],
         detection: DetectionMethod::Which("crush"),
-        yolo: Some(YoloMode::AlwaysYolo),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: None,
         set_default_command: false,
         detect_status: status_detection::detect_crush_status,
         container_env: &[],
-        hook_config: Some(AgentHookConfig {
-            settings_rel_path: ".local/share/crush/crush.json",
-            events: CRUSH_HOOK_EVENTS,
-        }),
+        hook_config: None,
         resume_strategy: ResumeStrategy::Unsupported,
         host_only: false,
         send_keys_enter_delay_ms: 0,

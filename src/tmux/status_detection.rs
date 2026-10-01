@@ -574,23 +574,79 @@ pub fn detect_settl_status(_content: &str) -> Status {
 }
 
 pub fn detect_crush_status(raw_content: &str) -> Status {
-    // TODO: Implement JSON hook-based detection first.
-    // if let Some(status) = check_json_hooks() { return status; }
-
-    // tmux capture-pane pads with blank lines; filter them out before windowing
-    // so we don't miss a spinner buried behind trailing empty lines.
-    let is_spinning = raw_content
-        .lines()
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
         .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+    let last_lines_lower = last_lines.to_lowercase();
+
+    // 1. Tool permission prompts or interactive question dialogs (Status::Waiting)
+    // Crush displays a modal dialog when tool execution or actions need confirmation.
+    if last_lines_lower.contains("permission required")
+        || last_lines_lower.contains("allow for session")
+        || (last_lines_lower.contains("allow") && last_lines_lower.contains("deny"))
+        || contains_approval_prompt(
+            &last_lines_lower,
+            &[
+                "continue?",
+                "proceed?",
+                "enter confirm",
+                "enter select",
+                "enter submit",
+            ],
+        )
+    {
+        return Status::Waiting;
+    }
+
+    // 2. Active generation / tool execution / thinking (Status::Running)
+    // Crush's help bar displays "esc cancel" (or "esc clear queue") while a turn is active.
+    // The prompt line also displays activity indicators such as "> Working!" or "> Prrrrrrrr...".
+    if last_lines_lower.contains("esc cancel")
+        || last_lines_lower.contains("esc clear queue")
+        || last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+        || last_lines_lower.contains("> working!")
+        || last_lines_lower.contains("> prrrrrrrr...")
+        || last_lines_lower.contains("working…")
+    {
+        return Status::Running;
+    }
+
+    // Modal or external spinner characters
+    if non_empty_lines
+        .iter()
         .rev()
         .take(10)
-        .any(has_spinner);
-
-    if is_spinning {
-        Status::Running
-    } else {
-        Status::Idle
+        .any(|l| has_spinner(l))
+    {
+        return Status::Running;
     }
+
+    // Check recent lines for active thinking / summarizing.
+    // Past-tense completions like "Thought for 17s" indicate finished turns and are excluded.
+    for line in non_empty_lines.iter().rev().take(10) {
+        let trimmed = line.trim();
+        if (trimmed.contains("thinking") || trimmed.contains("summarizing"))
+            && !trimmed.contains("thought for")
+        {
+            return Status::Running;
+        }
+    }
+
+    Status::Idle
 }
 
 pub fn detect_gemini_status(raw_content: &str) -> Status {
@@ -657,11 +713,77 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_crush_status_running() {
+        assert_eq!(
+            detect_crush_status("esc cancel • tab focus chat • / or ctrl+p commands …"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_crush_status("esc clear queue • tab focus chat"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_crush_status("   > Working!\n :::\n :::"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_crush_status("   > Prrrrrrrr...\n :::\n :::"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_crush_status("   ^b8€b=£)0D7^1€^ Thinking 9s\n\n   > Working!"),
+            Status::Running
+        );
+        assert_eq!(detect_crush_status("Thinking 10s"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_crush_status_waiting() {
+        let permission_dialog = "\
+╭───────────────────────────────────────────────────────────╮
+│  Permission Required ╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱╱  │
+│                                                           │
+│ Tool write                                                │
+│ File /tmp/foobar_crush.txt                                │
+│                                                           │
+│          Allow      Allow for Session      Deny           │
+│                                                           │
+│ ←/→ choose • enter confirm • esc exit • shift+←↓↑→ scroll │
+╰───────────────────────────────────────────────────────────╯";
+        assert_eq!(detect_crush_status(permission_dialog), Status::Waiting);
+        assert_eq!(
+            detect_crush_status("Execute command? (y/n)\nenter confirm"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_crush_status("Select option:\nenter select"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
     fn test_detect_crush_status_idle_on_plain_text() {
         assert_eq!(detect_crush_status(""), Status::Idle);
         assert_eq!(detect_crush_status("Some output"), Status::Idle);
         assert_eq!(detect_crush_status("file saved successfully"), Status::Idle);
         assert_eq!(detect_crush_status("ready\n> "), Status::Idle);
+        assert_eq!(
+            detect_crush_status("   > Ready!\n :::\n :::\n\n HEY! Crush update available."),
+            Status::Idle
+        );
+        let completed_turn = "\
+   Thought for 17s
+
+   The morning sun awakes the dew On emerald leaves and
+   petals blue A gentle breeze begins to blow Where secrets
+   of the garden grow Birds sing songs of joy and peace
+
+   > Ready for instructions
+ :::
+ :::
+
+ tab focus chat • / or ctrl+p commands • ctrl+l models …";
+        assert_eq!(detect_crush_status(completed_turn), Status::Idle);
     }
 
     #[test]
